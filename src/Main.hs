@@ -72,6 +72,12 @@ dumpTable db Table{tblName} = do
     updateRef _ colVals (cols, colVals')  = (cols, colVals : colVals')
 
 
+colw :: Integer -> Table -> Int
+colw totalW tbl =
+  let cols = fromIntegral $ length $ fst $ tblDump tbl
+  in floor $ (fromIntegral $ totalW - cols + 1) / fromIntegral cols
+
+
 -------------------------------------------------------------------------------
 data App = App
     { screenx       :: Integer
@@ -86,7 +92,7 @@ data App = App
 
 
 initialApp :: Integer -> Integer -> Window -> App
-initialApp x y win = App x y win [] (-1) False True True
+initialApp x y win = App x y win [] (-1) True True True
 
 
 -------------------------------------------------------------------------------
@@ -174,19 +180,27 @@ drawMain app@App{..} = do
         drawLine screenx
 
     sw = sidebarWidth screenx
+
     mw = screenx - (sw + 1)
+
+    colw' = colw mw (tables !! selected)
 
     dump :: ([Text], [[Text]])
     dump = tblDump $ tables !! selected
 
-    dumpTexts :: [Text]
-    dumpTexts = map (T.pack . show) (fst dump : snd dump)
+    dumpTexts :: [[Text]]
+    dumpTexts = fst dump : snd dump
 
     drawTexts _ _ [] = return ()
     drawTexts y x (t : ts) = do
+      drawCols y x t
+      drawTexts (y+1) x ts
+
+    drawCols _ _ [] = return ()
+    drawCols y x (t : ts) = do
       moveCursor y x
       drawText t
-      drawTexts (y+1) x ts
+      drawCols y (x + fromIntegral colw') ts
 
 
 loop :: App -> Curses ()
