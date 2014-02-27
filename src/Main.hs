@@ -9,11 +9,12 @@ module Main where
 
 -------------------------------------------------------------------------------
 import           Control.Monad
-import           Control.Monad.IO.Class (liftIO)
+import           Control.Monad.IO.Class     (liftIO)
+import           Control.Monad.State.Strict
 import           Data.IORef
 import           Data.Monoid
-import           Data.Text              (Text)
-import qualified Data.Text              as T
+import           Data.Text                  (Text)
+import qualified Data.Text                  as T
 import           Database.SQLite3
 import           Safe
 import           UI.NCurses
@@ -88,11 +89,12 @@ data App = App
     , updateSize    :: Bool
     , redrawSidebar :: Bool
     , redrawMain    :: Bool
+    , exit          :: Bool
     }
 
 
 initialApp :: Integer -> Integer -> Window -> App
-initialApp x y win = App x y win [] (-1) True True True
+initialApp x y win = App x y win [] (-1) True True True False
 
 
 -------------------------------------------------------------------------------
@@ -141,19 +143,26 @@ drawSidebar App{..} = do
 handleEvents :: App -> Curses App
 handleEvents app@App{..} = do
     ev <- getEvent window (Just 100)
-    case ev of
-      Just (EventCharacter char) -> return app
-      Just (EventSpecialKey key) -> return $ handleKey key
-      Just EventResized -> return $ app{updateSize=True}
-      _ -> return app
+    return $ case ev of
+               Just (EventCharacter char) -> handleChar char
+               Just (EventSpecialKey key) -> handleKey key
+               Just EventResized -> app{updateSize=True}
+               _ -> app
   where
     handleKey KeyDownArrow
-      | selected < length tables - 1 = app{selected=selected+1, redrawSidebar=True, redrawMain=True}
-      | otherwise = app{selected=0, redrawSidebar=True, redrawMain=True}
+      | selected < length tables - 1 =
+          app{selected=selected + 1, redrawSidebar=True, redrawMain=True}
+      | otherwise =
+          app{selected=0, redrawSidebar=True, redrawMain=True}
     handleKey KeyUpArrow
-      | selected > 0 = app{selected=selected-1, redrawSidebar=True, redrawMain=True}
-      | otherwise = app{selected=length tables-1, redrawSidebar=True, redrawMain=True}
+      | selected > 0 =
+          app{selected=selected - 1, redrawSidebar=True, redrawMain=True}
+      | otherwise =
+          app{selected=length tables - 1, redrawSidebar=True, redrawMain=True}
     handleKey _ = app
+
+    handleChar 'q' = app{exit=True}
+    handleChar _ = app
 
 
 drawMain :: App -> Curses ()
@@ -203,38 +212,34 @@ drawMain app@App{..} = do
       drawCols y (x + fromIntegral colw') ts
 
 
-loop :: App -> Curses ()
-loop app@App{..} = do
+updateScreenSize :: StateT App Curses ()
+updateScreenSize = do
+    (screeny', screenx') <- lift screenSize
+    modify $ \app -> app{screeny=screeny', screenx=screenx', updateSize=False}
 
-    -- TODO: refactor this using a state monad
 
-    app' <- if updateSize then do
-              (screeny', screenx') <- screenSize
-              return app{screeny=screeny', screenx=screenx', updateSize=False}
-            else
-              return app
+loop :: StateT App Curses ()
+loop = do
+    us <- gets updateSize
+    when us updateScreenSize
 
-    app'' <- if redrawSidebar then do
-               drawSidebar app'
-               return $ app{redrawSidebar=False}
-             else
-               return app'
+    rs <- gets redrawSidebar
+    get >>= when rs . lift . drawSidebar
 
-    app''' <- if redrawMain then do
-                drawMain app''
-                return app''{redrawMain=False}
-              else
-                return app''
+    rm <- gets redrawMain
+    get >>= when rm . lift . drawMain
 
-    app'''' <- handleEvents app'''
-    loop app''''
+    get >>= lift . handleEvents >>= put
+
+    exitp <- gets exit
+    unless exitp loop
 
 
 runApp :: App -> Curses ()
 runApp app@App{..} = do
     db <- liftIO $ open "sqlitedb"
     tables <- liftIO $ readTables db
-    loop app{tables=tables, selected=1}
+    evalStateT loop app{tables=tables, selected=0}
 
 
 main :: IO ()

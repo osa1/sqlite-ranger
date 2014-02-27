@@ -17,6 +17,7 @@ executable sqlite-ranger
   -- other-modules:
   -- other-extensions:
   build-depends:       base >=4.6 && <4.7,
+                       mtl >= 2 && < 3,
                        text >=1.0 && <2.0,
                        direct-sqlite == 2.3.11,
                        ncurses >= 0.2 && < 0.3,
