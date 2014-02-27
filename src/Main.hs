@@ -11,6 +11,7 @@ module Main where
 import           Control.Monad
 import           Control.Monad.State.Strict
 import           Data.IORef
+import           Data.Maybe                 (fromMaybe)
 import           Data.Monoid
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
@@ -28,6 +29,14 @@ data Table = Table
     } deriving (Show)
 
 
+tblCols :: Table -> [Text]
+tblCols = fst . tblDump
+
+
+tblRows :: Table -> [[Text]]
+tblRows = snd . tblDump
+
+
 readTables :: Database -> IO [Table]
 readTables db = do
     retRef <- newIORef []
@@ -41,7 +50,7 @@ readTables db = do
 
     callback :: IORef [Table] -> ColumnCount -> [Text] -> [Maybe Text] -> IO ()
     -- TODO: handle errors better
-    callback ref _ _ colVals = do
+    callback ref _ _ colVals =
       case join (atMay colVals tblNameIdx) of
         Nothing -> error "table name is missing"
         Just n ->
@@ -65,7 +74,7 @@ dumpTable db Table{tblName} = do
     callback ::
       IORef ([Text], [[Text]]) -> ColumnCount -> [Text] -> [Maybe Text] -> IO ()
     callback ref _ cols colVals =
-      modifyIORef ref (updateRef cols (map (maybe "-" id) colVals))
+      modifyIORef ref (updateRef cols (map (fromMaybe "-") colVals))
 
     updateRef :: [Text] -> [Text] -> ([Text], [[Text]]) -> ([Text], [[Text]])
     updateRef cols colVals ([], colVals') = (cols, colVals : colVals')
@@ -75,25 +84,133 @@ dumpTable db Table{tblName} = do
 colw :: Integer -> Table -> Int
 colw totalW tbl =
   let cols = fromIntegral $ length $ fst $ tblDump tbl
-  in floor $ (fromIntegral $ totalW - cols + 1) / fromIntegral cols
+  in floor (fromIntegral (totalW - cols + 1) / fromIntegral cols :: Double)
+
 
 
 -------------------------------------------------------------------------------
 data App = App
-    { screenx       :: Integer
+    { -- program settings
+      screenx       :: Integer
     , screeny       :: Integer
     , window        :: Window
+
+    -- tables in db
     , tables        :: [Table]
-    , selected      :: Int
+
+    -- event handling flags
     , updateSize    :: Bool
     , redrawSidebar :: Bool
     , redrawMain    :: Bool
     , exit          :: Bool
+
+    -- sidebar view state
+    , selectedTbl   :: Int
+
+    -- main view state
+    , selectedRow   :: Int
+    , selectedCol   :: Int
+
+    -- views
+    , sidebarView   :: View
+    , mainView      :: View
+    , focus         :: View
     }
 
 
-initialApp :: Integer -> Integer -> Window -> App
-initialApp x y win = App x y win [] (-1) True True True False
+initialApp :: Integer -> Integer -> Window -> View -> View -> App
+initialApp x y win sidebar main =
+    App x y win [] True True True False (-1) (-1) (-1) sidebar main sidebar
+
+
+-------------------------------------------------------------------------------
+data View = View
+    { handleKey  :: Key -> App -> App
+    , handleChar :: Char -> App -> App
+    }
+
+
+mkSidebarView :: View
+mkSidebarView = View
+    { handleKey = flip keyHandler
+    , handleChar = flip charHandler
+    }
+  where
+    keyHandler app KeyDownArrow = moveDown app
+    keyHandler app KeyUpArrow = moveUp app
+    keyHandler app _ = app
+
+    charHandler app '\n' =
+      app{ focus=mainView app
+         , selectedRow=if selectedRow app < 0 then 0 else selectedRow app
+         , selectedCol=if selectedCol app < 0 then 0 else selectedCol app
+         }
+    charHandler app 'q' = app{exit=True}
+    charHandler app 'k' = moveUp app
+    charHandler app 'j' = moveDown app
+    charHandler app _   = app
+
+    moveUp app@App{..}
+      | selectedTbl > 0 =
+          app{selectedTbl=selectedTbl - 1, redrawSidebar=True, redrawMain=True}
+      | otherwise =
+          app{selectedTbl=length tables - 1, redrawSidebar=True, redrawMain=True}
+
+    moveDown app@App{..}
+      | selectedTbl < length tables - 1 =
+          app{selectedTbl=selectedTbl + 1, redrawSidebar=True, redrawMain=True}
+      | otherwise =
+          app{selectedTbl=0, redrawSidebar=True, redrawMain=True}
+
+
+mkMainView :: View
+mkMainView = View
+    { handleKey = flip keyHandler
+    , handleChar = flip charHandler
+    }
+  where
+    keyHandler app KeyDownArrow = moveDown app
+    keyHandler app KeyUpArrow = moveUp app
+    keyHandler app KeyLeftArrow = moveLeft app
+    keyHandler app KeyRightArrow = moveRight app
+    keyHandler app KeyEnter = app -- TODO
+    keyHandler app _ = app
+
+    charHandler app 'q' = app{exit=True}
+    charHandler app '\27' = app{focus=sidebarView app}
+    charHandler app 'j' = moveDown app
+    charHandler app 'k' = moveUp app
+    charHandler app 'h' = moveLeft app
+    charHandler app 'l' = moveRight app
+    charHandler app _ = app
+
+    moveDown app@App{selectedTbl, tables, selectedRow} =
+      let rows = tblRows (tables !! selectedTbl)
+          lenRows = length rows
+      in if selectedRow > lenRows
+           then app{selectedRow=0, redrawMain=True}
+           else app{selectedRow=selectedRow + 1, redrawMain=True}
+
+    moveUp app@App{selectedTbl, tables, selectedRow} =
+      let rows = tblRows (tables !! selectedTbl)
+          lenRows = length rows
+      in if selectedRow > 0
+           then app{selectedRow=selectedRow - 1, redrawMain=True}
+           else app{selectedRow=lenRows, redrawMain=True}
+
+    moveLeft app@App{selectedTbl, tables, selectedCol} =
+      let cols = tblCols (tables !! selectedTbl)
+          lenCols = length cols
+      in if selectedCol > 0
+           then app{selectedCol=selectedCol - 1, redrawMain=True}
+           else app{selectedCol=lenCols - 1, redrawMain=True}
+
+    moveRight app@App{selectedTbl, tables, selectedCol} =
+      let cols = tblCols (tables !! selectedTbl)
+          lenCols = length cols
+      in if selectedCol < lenCols - 1
+           then app{selectedCol=selectedCol + 1, redrawMain=True}
+           else app{selectedCol=0, redrawMain=True}
 
 
 -------------------------------------------------------------------------------
@@ -102,7 +219,7 @@ drawLine = drawLineH (Just $ Glyph ' ' [])
 
 
 sidebarWidth :: Integer -> Integer
-sidebarWidth screenx = floor $ (fromIntegral screenx / 100) * 20
+sidebarWidth screenx = floor ((fromIntegral screenx / 100) * 20 :: Double)
 
 
 drawSidebar :: App -> Curses ()
@@ -117,17 +234,17 @@ drawSidebar App{..} = do
       drawText "Tables"
 
       setColor defaultColorID
-      drawTables tables selected selColor (0, 0)
+      drawTables tables selectedTbl selColor (0, 0)
 
     render
   where
     sw = sidebarWidth screenx
 
     drawTables [] _ _ _ = return ()
-    drawTables (t : ts) selected selColor (cy, cx) = do
+    drawTables (t : ts) selectedTbl selColor (cy, cx) = do
       moveCursor (cy+1) cx
 
-      if selected == 0 then do
+      if selectedTbl == 0 then do
         setColor selColor
         drawLine sw
         drawText $ tblName t
@@ -136,55 +253,36 @@ drawSidebar App{..} = do
         drawLine sw
         drawText $ tblName t
 
-      drawTables ts (selected-1) selColor (cy+1, cx)
+      drawTables ts (selectedTbl-1) selColor (cy+1, cx)
 
 
 handleEvents :: App -> Curses App
 handleEvents app@App{..} = do
-    ev <- getEvent window (Just 100)
+    ev <- getEvent window (Just 10)
     return $ case ev of
-               Just (EventCharacter char) -> handleChar char
-               Just (EventSpecialKey key) -> handleKey key
+               Just (EventCharacter char) -> handleChar focus char app
+               Just (EventSpecialKey key) -> handleKey focus key app
                Just EventResized -> app{updateSize=True}
                _ -> app
-  where
-    handleKey KeyDownArrow = moveDown
-    handleKey KeyUpArrow = moveUp
-    handleKey _ = app
-
-    handleChar 'q' = app{exit=True}
-    handleChar 'k' = moveUp
-    handleChar 'j' = moveDown
-    handleChar _   = app
-
-    moveUp
-      | selected > 0 =
-          app{selected=selected - 1, redrawSidebar=True, redrawMain=True}
-      | otherwise =
-          app{selected=length tables - 1, redrawSidebar=True, redrawMain=True}
-
-    moveDown
-      | selected < length tables - 1 =
-          app{selected=selected + 1, redrawSidebar=True, redrawMain=True}
-      | otherwise =
-          app{selected=0, redrawSidebar=True, redrawMain=True}
 
 
 drawMain :: App -> Curses ()
-drawMain app@App{..} = do
+drawMain App{..} = do
     titleColorID <- newColorID ColorWhite ColorGreen 1
+    selColor <- newColorID ColorWhite ColorMagenta 2
+
     updateWindow window $ do
       clearBox
 
       moveCursor 0 (sw+1)
       setColor titleColorID
       drawLine mw
-      drawText "SQL"
+      drawText "Table contents"
 
       moveCursor 1 (sw+1)
       setColor defaultColorID
 
-      drawTexts 1 (sw+1) (take (fromIntegral screeny - 1) dumpTexts)
+      drawTexts 1 (sw+1) (take (fromIntegral screeny - 1) dumpTexts) 0 selColor
   where
     clearBox :: Update ()
     clearBox = do
@@ -197,24 +295,26 @@ drawMain app@App{..} = do
 
     mw = screenx - (sw + 1)
 
-    colw' = colw mw (tables !! selected)
+    colw' = colw mw (tables !! selectedTbl)
 
     dump :: ([Text], [[Text]])
-    dump = tblDump $ tables !! selected
+    dump = tblDump $ tables !! selectedTbl
 
     dumpTexts :: [[Text]]
     dumpTexts = fst dump : snd dump
 
-    drawTexts _ _ [] = return ()
-    drawTexts y x (t : ts) = do
-      drawCols y x t
-      drawTexts (y+1) x ts
+    drawTexts _ _ [] _ _ = return ()
+    drawTexts y x (t : ts) curLine selColor = do
+      drawCols y x t curLine 0 selColor
+      drawTexts (y+1) x ts (curLine + 1) selColor
 
-    drawCols _ _ [] = return ()
-    drawCols y x (t : ts) = do
+    drawCols _ _ [] _ _ _ = return ()
+    drawCols y x (t : ts) curLine curCol selColor = do
       moveCursor y x
-      drawText (T.take (fromIntegral colw' - 1) t)
-      drawCols y (x + fromIntegral colw') ts
+      when (curLine == selectedRow && curCol == selectedCol) $ setColor selColor
+      drawText $ T.take (fromIntegral colw' - 1) t
+      when (curLine == selectedRow && curCol == selectedCol) $ setColor defaultColorID
+      drawCols y (x + fromIntegral colw') ts curLine (curCol + 1) selColor
 
 
 updateScreenSize :: StateT App Curses ()
@@ -244,7 +344,7 @@ runApp :: App -> Curses ()
 runApp app@App{..} = do
     db <- liftIO $ open "sqlitedb"
     tables <- liftIO $ readTables db
-    evalStateT loop app{tables=tables, selected=0}
+    evalStateT loop app{tables=tables, selectedTbl=0}
 
 
 main :: IO ()
@@ -253,4 +353,4 @@ main = runCurses $ do
     window <- defaultWindow
     (screeny, screenx) <- screenSize
     _ <- setCursorMode CursorInvisible
-    runApp $ initialApp screenx screeny window
+    runApp $ initialApp screenx screeny window mkSidebarView mkMainView
