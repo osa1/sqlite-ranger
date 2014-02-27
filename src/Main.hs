@@ -9,7 +9,6 @@ module Main where
 
 -------------------------------------------------------------------------------
 import           Control.Monad
-import           Control.Monad.IO.Class     (liftIO)
 import           Control.Monad.State.Strict
 import           Data.IORef
 import           Data.Monoid
@@ -149,20 +148,26 @@ handleEvents app@App{..} = do
                Just EventResized -> app{updateSize=True}
                _ -> app
   where
-    handleKey KeyDownArrow
-      | selected < length tables - 1 =
-          app{selected=selected + 1, redrawSidebar=True, redrawMain=True}
-      | otherwise =
-          app{selected=0, redrawSidebar=True, redrawMain=True}
-    handleKey KeyUpArrow
+    handleKey KeyDownArrow = moveDown
+    handleKey KeyUpArrow = moveUp
+    handleKey _ = app
+
+    handleChar 'q' = app{exit=True}
+    handleChar 'k' = moveUp
+    handleChar 'j' = moveDown
+    handleChar _   = app
+
+    moveUp
       | selected > 0 =
           app{selected=selected - 1, redrawSidebar=True, redrawMain=True}
       | otherwise =
           app{selected=length tables - 1, redrawSidebar=True, redrawMain=True}
-    handleKey _ = app
 
-    handleChar 'q' = app{exit=True}
-    handleChar _ = app
+    moveDown
+      | selected < length tables - 1 =
+          app{selected=selected + 1, redrawSidebar=True, redrawMain=True}
+      | otherwise =
+          app{selected=0, redrawSidebar=True, redrawMain=True}
 
 
 drawMain :: App -> Curses ()
@@ -208,7 +213,7 @@ drawMain app@App{..} = do
     drawCols _ _ [] = return ()
     drawCols y x (t : ts) = do
       moveCursor y x
-      drawText t
+      drawText (T.take (fromIntegral colw' - 1) t)
       drawCols y (x + fromIntegral colw') ts
 
 
