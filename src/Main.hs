@@ -179,7 +179,7 @@ drawMain app@App{..} = do
       moveCursor 1 (sw+1)
       setColor defaultColorID
 
-      drawTexts 1 (sw+1) dumpTexts
+      drawTexts 1 (sw+1) (take (fromIntegral screeny - 1) dumpTexts)
   where
     clearBox :: Update ()
     clearBox = do
